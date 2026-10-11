@@ -122,7 +122,6 @@ for epoch in range(num_epochs):
             start_time = time.time()
             print("Generated text:")
             print(model.generate_text(100, start_token, sample_index, tokenizer))
-
         step += 1
 
 # saving the model
