@@ -218,5 +218,5 @@ __marimo__/
 .streamlit/secrets.toml
 
 # model wights
-*checkpoints/
+*checkpoint*/
 *data/
