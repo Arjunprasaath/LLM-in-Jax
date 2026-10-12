@@ -16,7 +16,7 @@ embed_dim = 768
 maxlen = 512
 num_heads = 8
 d_ff = embed_dim * 4
-num_transformer_blocks = 4
+num_transformer_blocks = 6
 
 batch_size = 512
 num_epochs = 1
@@ -36,7 +36,6 @@ checkpoint_path = Path(f"checkpoint_{batch_size}_{version}").resolve()
 checkpointer = orbax.PyTreeCheckpointer()
 abstract_state = nnx.state(model)
 restored_state = checkpointer.restore(checkpoint_path, args = orbax.args.PyTreeRestore(item = abstract_state))
-
 nnx.update(model, restored_state)
 
 # load tokenizer

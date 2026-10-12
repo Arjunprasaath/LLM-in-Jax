@@ -7,16 +7,16 @@ import flax.nnx as nnx
 
 # basic attention block
 class AttentionBlock(nnx.Module):
-    def __init__(self, embed_dim: int, num_heads: int, d_ff: int, rngs: nnx.Rngs, rate: float = 0.1):
-        self.mha = nnx.MultiHeadAttention(num_heads = num_heads, in_features = embed_dim, rngs = rngs)
+    def __init__(self, embed_dim: int, num_heads: int, d_ff: int, rngs: nnx.Rngs, rate: float = 0.1, dtype: jnp.dtype = jnp.bfloat16):
+        self.mha = nnx.MultiHeadAttention(num_heads = num_heads, in_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = dtype)
         self.dropout1 = nnx.Dropout(rate = rate, rngs = rngs)
-        self.layer_norm1 = nnx.LayerNorm(epsilon = 1e-6, num_features = embed_dim, rngs = rngs)
+        self.layer_norm1 = nnx.LayerNorm(epsilon = 1e-6, num_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = dtype)
         self.mlp = nnx.Sequential(
-            nnx.Linear(in_features = embed_dim, out_features = d_ff, rngs = rngs),
+            nnx.Linear(in_features = embed_dim, out_features = d_ff, rngs = rngs, dtype = dtype, param_dtype = dtype),
             nnx.relu,
-            nnx.Linear(in_features = d_ff, out_features = embed_dim, rngs = rngs),
+            nnx.Linear(in_features = d_ff, out_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = dtype),
             nnx.Dropout(rate = rate, rngs = rngs))
-        self.layer_norm2 = nnx.LayerNorm(epsilon = 1e-6, num_features = embed_dim, rngs = rngs)
+        self.layer_norm2 = nnx.LayerNorm(epsilon = 1e-6, num_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = dtype)
     
     def __call__(self, inputs):
         causal_mask = nnx.make_causal_mask(inputs[..., 0], dtype=bool)

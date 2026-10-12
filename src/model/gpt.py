@@ -8,12 +8,12 @@ from attention.attention import AttentionBlock
 
 # basic GPT model
 class GPT(nnx.Module):
-    def __init__(self, vocab_size : int, maxlen : int, embed_dim: int, num_heads: int, d_ff: int, num_transformer_blocks: int, rngs: nnx.Rngs):
+    def __init__(self, vocab_size : int, maxlen : int, embed_dim: int, num_heads: int, d_ff: int, num_transformer_blocks: int, rngs: nnx.Rngs, dtype: jnp.dtype = jnp.bfloat16):
         self.embedding_block = EmbeddingBlock(vocab_size = vocab_size, maxlen = maxlen, embed_dim = embed_dim, rngs = rngs)
         self.transformer_blocks = nnx.Sequential(
             *[AttentionBlock(embed_dim = embed_dim, num_heads = num_heads, d_ff = d_ff, rngs = rngs)  for _ in range(num_transformer_blocks)]
         )
-        self.output_layer = nnx.Linear(in_features = embed_dim, out_features = vocab_size, rngs = rngs)
+        self.output_layer = nnx.Linear(in_features = embed_dim, out_features = vocab_size, rngs = rngs, dtype = dtype, param_dtype = dtype)
     
     def __call__(self, inputs):
         x = self.embedding_block(inputs)

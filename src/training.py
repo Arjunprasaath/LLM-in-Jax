@@ -1,7 +1,8 @@
 # import statements
 import os
-os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = ".20"
+os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = "0.20"
 
+import json
 import time
 from pathlib import Path
 from pprint import pprint
@@ -30,10 +31,10 @@ embed_dim = 768
 maxlen = 512
 num_heads = 8
 d_ff = embed_dim * 4
-num_transformer_blocks = 4
+num_transformer_blocks = 6
 
 batch_size = 512
-num_epochs = 1
+num_epochs = 2
 lr = 1e-4
 
 rngs = nnx.Rngs(0)
@@ -81,10 +82,15 @@ model = GPT(vocab_size, maxlen, embed_dim, num_heads, d_ff, num_transformer_bloc
 optimizer = nnx.Optimizer(model, optax.adam(lr), wrt = nnx.Param)
 metrics = nnx.MultiMetric(loss = nnx.metrics.Average("loss"))
 
-metric_history = {
-    "train_loss": []
-}
+checkpoint_path = Path(f"checkpoint_{batch_size}_{version}").resolve()
+history_path = checkpoint_path / "metric_history.json"
 
+if history_path.exists():
+    with open(history_path ,'r') as f:
+        metric_history = json.load(f)
+    print(f"Loaded existing metric histroy with {len(metric_history['train_loss'])}\n")
+else:
+    metric_history = {"train_loss": []}
 
 # https://docs.jax.dev/en/latest/_autosummary/jax.vmap.html
 prep_target_batch = jax.vmap(
@@ -92,7 +98,7 @@ prep_target_batch = jax.vmap(
 ) # and using vmap cause we want to parallelize this lambda function over the batch dimension.
 
 def loss_fun(model, batch):
-    logits = model(batch[0])
+    logits = model(batch[0]).astype(jnp.float32)
     loss = optax.softmax_cross_entropy_with_integer_labels(logits = logits, labels = batch[1])
     mask = (batch[1] != pad_id).astype(jnp.float32)
     masked_loss = (loss * mask).sum() / mask.sum()
@@ -115,7 +121,7 @@ for epoch in range(num_epochs):
         train_step(model, optimizer, metrics, (batch, prep_target_batch(batch)))
         if (step + 1) % 100 == 0:
             for metric, value in metrics.compute().items():
-                metric_history[f"train_{metric}"].append(value)
+                metric_history[f"train_{metric}"].append(float(value))
             metrics.reset()
             elapsed_time = time.time() - start_time
             print(f"\n Step {step + 1}, Loss: {metric_history["train_loss"][-1]}, Spent Time: {elapsed_time:.2f} seconds")
@@ -124,11 +130,14 @@ for epoch in range(num_epochs):
             print(model.generate_text(100, start_token, sample_index, tokenizer))
         step += 1
 
-# saving the model
-state = nnx.state(model)
-checkpoint_path = Path(f"checkpoint_{batch_size}_{version}").resolve()
+# saving the model, optimizer and train_loss metric
 checkpointer = orbax.PyTreeCheckpointer()
+state = nnx.state((model, optimizer))
 checkpointer.save(checkpoint_path, args = orbax.args.PyTreeSave(state), force=True)
+
+with open(history_path, 'w') as f:
+    json.dump(metric_history, f)
+print(f"Saved checkpoint and updated metric successfully!\n")
 
 plt.plot(metric_history['train_loss'])
 plt.title(f"Training loss checkpoint_{batch_size}_{version}")
