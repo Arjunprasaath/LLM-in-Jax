@@ -3,6 +3,7 @@ import os
 os.environ['XLA_PYTHON_CLIENT_PREALLOCATE'] = "0.20"
 
 import json
+import yaml
 import time
 from pathlib import Path
 from pprint import pprint
@@ -26,20 +27,23 @@ from model.gpt import GPT
 import matplotlib.pyplot as plt
 
 # hyperparemeters
-vocab_size = 10_000
-embed_dim = 768
-maxlen = 512
-num_heads = 8
-d_ff = embed_dim * 4
-num_transformer_blocks = 6
+with open("config.yaml", 'r') as f:
+    config = yaml.safe_load(f)
 
-batch_size = 512
-num_epochs = 2
-lr = 1e-4
+vocab_size = config["model_training"]["vocab_size"]
+embed_dim = config["model_training"]["embed_dim"]
+maxlen = config["model_training"]["maxlen"]
+num_heads = config["model_training"]["num_heads"]
+d_ff = config["model_training"]["d_ff"]
+num_transformer_blocks = config["model_training"]["num_transformer_blocks"]
+
+batch_size = config["model_training"]["batch_size"]
+num_epochs = config["model_training"]["num_epochs"]
+lr = config["model_training"]["lr"]
+version = config["model_training"]["version"]
 
 rngs = nnx.Rngs(0)
 
-version = "v1"
 
 start_prompt = ["<|startoftext|> once up on a time"]
 

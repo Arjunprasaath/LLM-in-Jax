@@ -1,0 +1,11 @@
+model_training:
+  lr: 1e-4
+  num_epochs: 2
+  batch_size: 512
+  vocab_size: 10000
+  num_heads: 8
+  num_transformer_blocks: 6
+  maxlen: 512
+  embed_dim: 768
+  d_ff: 3073
+  version: "v1"
