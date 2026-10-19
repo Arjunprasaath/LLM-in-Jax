@@ -84,7 +84,7 @@ dataloader = grain.DataLoader(
 # initializing model,  optimizer adn metrics
 model = GPT(vocab_size, maxlen, embed_dim, num_heads, d_ff, num_transformer_blocks, rngs)
 optimizer = nnx.Optimizer(model, optax.adam(lr), wrt = nnx.Param)
-metrics = nnx.MultiMetric(loss = nnx.metrics.Average("loss"))
+metrics = nnx.MultiMetric(loss = nnx.metrics.Average("loss"), perplexity = nnx.metrics.Average("perplexity"))
 
 checkpoint_path = Path(f"checkpoint_{batch_size}_{version}").resolve()
 history_path = checkpoint_path / "metric_history.json"
@@ -92,9 +92,10 @@ history_path = checkpoint_path / "metric_history.json"
 if history_path.exists():
     with open(history_path ,'r') as f:
         metric_history = json.load(f)
-    print(f"Loaded existing metric histroy with {len(metric_history['train_loss'])}\n")
+    print(f"Loaded existing metric histroy with {len(metric_history['train_loss'])} and {len(metric_history['train_perplexity'])}\n")
 else:
-    metric_history = {"train_loss": []}
+    metric_history = {"train_loss": [], 
+    "train_perplexity": []}
 
 # https://docs.jax.dev/en/latest/_autosummary/jax.vmap.html
 prep_target_batch = jax.vmap(
@@ -106,14 +107,15 @@ def loss_fun(model, batch):
     loss = optax.softmax_cross_entropy_with_integer_labels(logits = logits, labels = batch[1])
     mask = (batch[1] != pad_id).astype(jnp.float32)
     masked_loss = (loss * mask).sum() / mask.sum()
+    perplexity = jnp.exp(masked_loss)
     print(loss, mask, masked_loss)
-    return masked_loss, logits
+    return masked_loss, perplexity, logits
 
 @nnx.jit(donate_argnums=(0, 1, 3))
 def train_step(model: GPT, optimizer: nnx.Optimizer, metrics: nnx.MultiMetric, batch):
     grad_fun = nnx.value_and_grad(loss_fun, has_aux=True) # https://flax.readthedocs.io/en/stable/api_reference/flax.nnx/transforms.html#flax.nnx.value_and_grad
-    (loss, logits), grad = grad_fun(model, batch)
-    metrics.update(loss = loss, logits = logits, labels = batch[1]) # https://flax.readthedocs.io/en/stable/api_reference/flax.nnx/training/metrics.html
+    (loss, perplexity, logits), grad = grad_fun(model, batch)
+    metrics.update(loss = loss, perplexity = perplexity, logits = logits, labels = batch[1]) # https://flax.readthedocs.io/en/stable/api_reference/flax.nnx/training/metrics.html
     optimizer.update(model, grad) # https://flax.readthedocs.io/en/stable/api_reference/flax.nnx/training/optimizer.html
 
 # training steps
@@ -128,7 +130,7 @@ for epoch in range(num_epochs):
                 metric_history[f"train_{metric}"].append(float(value))
             metrics.reset()
             elapsed_time = time.time() - start_time
-            print(f"\n Step {step + 1}, Loss: {metric_history["train_loss"][-1]}, Spent Time: {elapsed_time:.2f} seconds")
+            print(f"\n Step {step + 1}, Loss: {metric_history["train_loss"][-1]}, Perplexity: {metric_history["train_perplexity"][-1]}, Spent Time: {elapsed_time:.2f} seconds")
             start_time = time.time()
             print("Generated text:")
             print(model.generate_text(100, start_token, sample_index, tokenizer))

@@ -220,3 +220,9 @@ __marimo__/
 # model wights
 *checkpoint*/
 *data/
+
+# datasets 
+*datasets/
+
+# logs
+*logs/
