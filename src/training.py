@@ -109,12 +109,12 @@ def loss_fun(model, batch):
     masked_loss = (loss * mask).sum() / mask.sum()
     perplexity = jnp.exp(masked_loss)
     print(loss, mask, masked_loss)
-    return masked_loss, perplexity, logits
+    return masked_loss, (perplexity, logits)
 
 @nnx.jit(donate_argnums=(0, 1, 3))
 def train_step(model: GPT, optimizer: nnx.Optimizer, metrics: nnx.MultiMetric, batch):
     grad_fun = nnx.value_and_grad(loss_fun, has_aux=True) # https://flax.readthedocs.io/en/stable/api_reference/flax.nnx/transforms.html#flax.nnx.value_and_grad
-    (loss, perplexity, logits), grad = grad_fun(model, batch)
+    (loss, (perplexity, logits)), grad = grad_fun(model, batch)
     metrics.update(loss = loss, perplexity = perplexity, logits = logits, labels = batch[1]) # https://flax.readthedocs.io/en/stable/api_reference/flax.nnx/training/metrics.html
     optimizer.update(model, grad) # https://flax.readthedocs.io/en/stable/api_reference/flax.nnx/training/optimizer.html
 
