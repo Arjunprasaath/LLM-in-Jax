@@ -226,3 +226,15 @@ __marimo__/
 
 # logs
 *logs/
+
+# Data bins
+*data_bin/
+
+# Videos docs
+*docs/
+
+# Training results
+*results/
+
+# Tokenizer
+*tokenizer_32k/

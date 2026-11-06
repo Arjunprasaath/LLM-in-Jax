@@ -1,4 +1,5 @@
 import os
+import pyarrow as pa
 from datatrove.executor import LocalPipelineExecutor
 from datatrove.pipeline.readers import ParquetReader
 from datatrove.pipeline.writers import ParquetWriter
@@ -95,12 +96,45 @@ def print_stage_summary(stage_name: str, pipeline_stats):
 # ==========================================
 # Configurations & Paths
 # ==========================================
-INPUT_DATA = "datasets/datasets/data/enwiki"
-BASE_WORKING_DIR = "datasets/preprocessed_finewiki/pipeline_workspace"
-BASE_LOG_DIR = "logs/finewiki"
+INPUT_DATA = "datasets/combined_fine_web_wiki/"
+BASE_WORKING_DIR = "datasets/preprocessed_combined/pipeline_workspace"
+BASE_LOG_DIR = "logs/fine_web_wiki"
 
 TASKS = 14
 WORKERS = 14
+
+# FineWeb and FineWiki have different metadata columns; a ParquetWriter fixes its
+# schema on the first batch, so keep only the shared fields and tag the source.
+COMMON_META = [
+    "dump", "url", "file_path", "language", "language_score",
+    "token_count", "score", "int_score", "duplicate_count",
+]
+
+
+OUTPUT_SCHEMA = pa.schema([
+    ("text", pa.string()),
+    ("id", pa.string()),
+    ("metadata", pa.struct([
+        ("dump", pa.string()),
+        ("url", pa.string()),
+        ("file_path", pa.string()),
+        ("language", pa.string()),
+        ("language_score", pa.float64()),
+        ("token_count", pa.int64()),
+        ("score", pa.float64()),
+        ("int_score", pa.int64()),
+        ("duplicate_count", pa.int64()),
+        ("source", pa.string()),
+    ])),
+])
+
+
+def unify_adapter(self, document):
+    data = self._default_adapter(document)
+    meta = document.metadata
+    data["metadata"] = {k: meta.get(k) for k in COMMON_META}
+    data["metadata"]["source"] = "wiki" if "wikiname" in meta else "web"
+    return data
 
 
 def main():
@@ -111,83 +145,84 @@ def main():
     # STAGE 1: Gopher Quality & Repetition Filtering
     # =====================================================================
     print("\n>>> STARTING STAGE 1: Gopher Quality & Repetition Filters <<<")
-    STAGE1_OUT = f"{BASE_WORKING_DIR}/stage1_filtered"
+    # STAGE1_OUT = f"{BASE_WORKING_DIR}/stage1_filtered"
 
-    stage1_stats = LocalPipelineExecutor(
-        pipeline=[
-            ParquetReader(data_folder=INPUT_DATA),
-            GopherQualityFilter(),
-            GopherRepetitionFilter(),
-            ParquetWriter(output_folder=STAGE1_OUT),
-        ],
-        tasks=TASKS,
-        workers=WORKERS,
-        logging_dir=f"{BASE_LOG_DIR}/stage1_gopher/",
-    ).run()
+    # stage1_stats = LocalPipelineExecutor(
+    #     pipeline=[
+    #         ParquetReader(data_folder=INPUT_DATA),
+    #         GopherQualityFilter(),
+    #         GopherRepetitionFilter(),
+    #         ParquetWriter(output_folder=STAGE1_OUT),
+    #     ],
+    #     tasks=TASKS,
+    #     workers=WORKERS,
+    #     logging_dir=f"{BASE_LOG_DIR}/stage1_gopher/",
+    # ).run()
 
-    overall_counts["Stage 1: After Gopher Filters"] = print_stage_summary("Stage 1 (Gopher)", stage1_stats) # 8_716_438
+    # overall_counts["Stage 1: After Gopher Filters"] = print_stage_summary("Stage 1 (Gopher)", stage1_stats) # 8_716_438
 
     # =====================================================================
     # STAGE 2: Exact Deduplication
     # =====================================================================
     print("\n>>> STARTING STAGE 2: Exact Deduplication <<<")
-    EXACT_DIR = f"{BASE_WORKING_DIR}/exact_dedup"
-    STAGE2_OUT = f"{BASE_WORKING_DIR}/stage2_exact_deduped"
+    # EXACT_DIR = f"{BASE_WORKING_DIR}/exact_dedup"
+    # STAGE2_OUT = f"{BASE_WORKING_DIR}/stage2_exact_deduped"
 
-    # Signatures
-    exact_dedup_config = ExactDedupConfig(
-        content_getter=lambda doc: doc.text.encode("utf-8"),
-    )
+    # # Signatures
+    # exact_dedup_config = ExactDedupConfig(
+    #     content_getter=lambda doc: doc.text.encode("utf-8"),
+    # )
 
-    LocalPipelineExecutor(
-        pipeline=[
-            ParquetReader(data_folder=STAGE1_OUT),
-            ExactDedupSignature(
-                output_folder=f"{EXACT_DIR}/signatures",
-                config=exact_dedup_config,
-                finder_workers=TASKS,
-            ),
-        ],
-        tasks=TASKS,
-        workers=WORKERS,
-        logging_dir=f"{BASE_LOG_DIR}/exact_1_sig/",
-    ).run()
+    # LocalPipelineExecutor(
+    #     pipeline=[
+    #         ParquetReader(data_folder=STAGE1_OUT),
+    #         ExactDedupSignature(
+    #             output_folder=f"{EXACT_DIR}/signatures",
+    #             config=exact_dedup_config,
+    #             finder_workers=TASKS,
+    #         ),
+    #     ],
+    #     tasks=TASKS,
+    #     workers=WORKERS,
+    #     logging_dir=f"{BASE_LOG_DIR}/exact_1_sig/",
+    # ).run()
 
-    # Find Duplicates
-    LocalPipelineExecutor(
-        pipeline=[
-            ExactFindDedups(
-                data_folder=f"{EXACT_DIR}/signatures",
-                output_folder=f"{EXACT_DIR}/duplicates",
-                config=exact_dedup_config,
-            ),
-        ],
-        tasks=TASKS,
-        workers=WORKERS,
-        logging_dir=f"{BASE_LOG_DIR}/exact_2_find/",
-    ).run()
+    # # Find Duplicates
+    # LocalPipelineExecutor(
+    #     pipeline=[
+    #         ExactFindDedups(
+    #             data_folder=f"{EXACT_DIR}/signatures",
+    #             output_folder=f"{EXACT_DIR}/duplicates",
+    #             config=exact_dedup_config,
+    #         ),
+    #     ],
+    #     tasks=TASKS,
+    #     workers=WORKERS,
+    #     logging_dir=f"{BASE_LOG_DIR}/exact_2_find/",
+    # ).run()
 
-    # Filter Duplicates
-    stage2_stats = LocalPipelineExecutor(
-        pipeline=[
-            ParquetReader(data_folder=STAGE1_OUT),
-            ExactDedupFilter(
-                data_folder=f"{EXACT_DIR}/duplicates",
-                config=exact_dedup_config,
-            ),
-            ParquetWriter(output_folder=STAGE2_OUT),
-        ],
-        tasks=TASKS,
-        workers=WORKERS,
-        logging_dir=f"{BASE_LOG_DIR}/exact_3_filter/",
-    ).run()
+    # # Filter Duplicates
+    # stage2_stats = LocalPipelineExecutor(
+    #     pipeline=[
+    #         ParquetReader(data_folder=STAGE1_OUT),
+    #         ExactDedupFilter(
+    #             data_folder=f"{EXACT_DIR}/duplicates",
+    #             config=exact_dedup_config,
+    #         ),
+    #         ParquetWriter(output_folder=STAGE2_OUT),
+    #     ],
+    #     tasks=TASKS,
+    #     workers=WORKERS,
+    #     logging_dir=f"{BASE_LOG_DIR}/exact_3_filter/",
+    # ).run()
 
-    overall_counts["Stage 2: After Exact Dedup"] = print_stage_summary("Stage 2 (Exact Dedup)", stage2_stats)
+    # overall_counts["Stage 2: After Exact Dedup"] = print_stage_summary("Stage 2 (Exact Dedup)", stage2_stats)
 
     # =====================================================================
     # STAGE 3: Fuzzy Deduplication (MinHash LSH)
     # =====================================================================
     print("\n>>> STARTING STAGE 3: Fuzzy / MinHash Deduplication <<<")
+    STAGE2_OUT = INPUT_DATA
     MINHASH_DIR = f"{BASE_WORKING_DIR}/minhash"
     STAGE3_OUT = f"{BASE_WORKING_DIR}/stage3_fuzzy_deduped"
 
@@ -242,7 +277,7 @@ def main():
         pipeline=[
             ParquetReader(data_folder=STAGE2_OUT),
             MinhashDedupFilter(input_folder=f"{MINHASH_DIR}/clusters"),
-            ParquetWriter(output_folder=STAGE3_OUT),
+            ParquetWriter(output_folder=STAGE3_OUT, adapter=unify_adapter, schema=OUTPUT_SCHEMA),
         ],
         tasks=TASKS,
         workers=WORKERS,
@@ -255,8 +290,26 @@ def main():
     # STAGE 4: Stats, CCNet Perplexity & Token Counts
     # =====================================================================
     print("\n>>> STARTING STAGE 4: Perplexity & Token Counting <<<")
-    FINAL_OUT = "datasets/final_clean_with_stats/"
-    STATS_METRICS_DIR = "datasets/stats_metrics/"
+    FINAL_OUT = "datasets/preprocessed_combined/final_clean_with_stats/"
+    STATS_METRICS_DIR = "datasets/preprocessed_combined/stats_metrics/"
+    STAGE4_SCHEMA = pa.schema([
+        OUTPUT_SCHEMA.field("text"),
+        OUTPUT_SCHEMA.field("id"),
+        pa.field("metadata", pa.struct(
+            list(OUTPUT_SCHEMA.field("metadata").type) + [
+                pa.field("fqdn", pa.string()),
+                pa.field("suffix", pa.string()),
+                pa.field("ccnet_perplexity_wikipedia_en", pa.float64()),
+                pa.field("length", pa.int64()),
+                pa.field("white_space_ratio", pa.float64()),
+                pa.field("non_alpha_digit_ratio", pa.float64()),
+                pa.field("digit_ratio", pa.float64()),
+                pa.field("uppercase_ratio", pa.float64()),
+                pa.field("elipsis_ratio", pa.float64()),
+                pa.field("punctuation_ratio", pa.float64()),
+            ]
+        )),
+    ])
 
     stage4_stats = LocalPipelineExecutor(
         pipeline=[
@@ -268,7 +321,7 @@ def main():
                 language="en",
             ),
             DocStats(output_folder=f"{STATS_METRICS_DIR}/doc_stats"),
-            ParquetWriter(output_folder=FINAL_OUT),
+            ParquetWriter(output_folder=FINAL_OUT, schema=STAGE4_SCHEMA),
         ],
         tasks=TASKS,
         workers=WORKERS,

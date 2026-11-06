@@ -1,11 +1,16 @@
-model_training:
-  lr: 1e-4
-  num_epochs: 2
-  batch_size: 512
-  vocab_size: 10000
+model_training_1:
+  lr: 3e-4
+  batch_size: 64
+  vocab_size: 32000
   num_heads: 8
-  num_transformer_blocks: 6
-  maxlen: 512
-  embed_dim: 768
-  d_ff: 3073
-  version: "v1"
+  num_transformer_blocks: 24
+  maxlen: 1024
+  embed_dim: 1024
+  d_ff: 3072
+  version: "adv_v2.1_BPB_check"
+  max_steps: 5000
+
+model_training_2:
+  num_heads: 16
+  num_transformer_blocks: 32
+  version: "adv_v3"

@@ -111,7 +111,7 @@ def loss_fun(model, batch):
     print(loss, mask, masked_loss)
     return masked_loss, (perplexity, logits)
 
-@nnx.jit(donate_argnums=(0, 1, 3))
+@nnx.jit(donate_argnums=(0, 1, 2))
 def train_step(model: GPT, optimizer: nnx.Optimizer, metrics: nnx.MultiMetric, batch):
     grad_fun = nnx.value_and_grad(loss_fun, has_aux=True) # https://flax.readthedocs.io/en/stable/api_reference/flax.nnx/transforms.html#flax.nnx.value_and_grad
     (loss, (perplexity, logits)), grad = grad_fun(model, batch)
@@ -119,22 +119,32 @@ def train_step(model: GPT, optimizer: nnx.Optimizer, metrics: nnx.MultiMetric, b
     optimizer.update(model, grad) # https://flax.readthedocs.io/en/stable/api_reference/flax.nnx/training/optimizer.html
 
 # training steps
+steps_per_epoch = len(ds) // batch_size
+total_steps = (num_epochs * len(ds)) // batch_size
+
 step = 0
-for epoch in range(num_epochs):
-    start_time = time.time()
-    for batch in dataloader:
-        # print(batch.shape)
-        train_step(model, optimizer, metrics, (batch, prep_target_batch(batch)))
-        if (step + 1) % 100 == 0:
-            for metric, value in metrics.compute().items():
-                metric_history[f"train_{metric}"].append(float(value))
-            metrics.reset()
-            elapsed_time = time.time() - start_time
-            print(f"\n Step {step + 1}, Loss: {metric_history["train_loss"][-1]}, Perplexity: {metric_history["train_perplexity"][-1]}, Spent Time: {elapsed_time:.2f} seconds")
-            start_time = time.time()
-            print("Generated text:")
-            print(model.generate_text(100, start_token, sample_index, tokenizer))
-        step += 1
+current_epoch = 0
+start_time = time.time()
+epoch_start_time = time.time()
+
+for batch in dataloader:
+    train_step(model, optimizer, metrics, (batch, prep_target_batch(batch)))
+    if (step + 1) % 100 == 0:
+        for metric, value in metrics.compute().items():
+            metric_history[f"train_{metric}"].append(float(value))
+        metrics.reset()
+        elapsed_time = time.time() - start_time
+        print(f"\n Step {step + 1}, Loss: {metric_history["train_loss"][-1]}, Perplexity: {metric_history["train_perplexity"][-1]}, Spent Time: {elapsed_time:.2f} seconds")
+        start_time = time.time()
+        print("Generated text:")
+        print(model.generate_text(100, start_token, sample_index, tokenizer))
+    
+    epoch_now = ((step + 1) * batch_size) // len(ds)
+    if epoch_now > current_epoch:
+        current_epoch = epoch_now
+        print(f"Finished epoch {current_epoch}/{num_epochs} in {time.time() - epoch_start_time:.2f} seconds")
+        epoch_start_time = time.time()
+    step += 1
 
 # saving the model, optimizer and train_loss metric
 checkpointer = orbax.PyTreeCheckpointer()
@@ -150,3 +160,5 @@ plt.title(f"Training loss checkpoint_{batch_size}_{version}")
 plt.xlabel("Steps % 100")
 plt.ylabel("Loss")
 plt.savefig(f"train_loss_checkpoint_{batch_size}_{version}.png")
+
+### CHECK WITH THE JAX NOTEBOOK
