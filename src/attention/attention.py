@@ -11,15 +11,16 @@ def cudnn_causal_attention(query, key, value, **kwargs):
 # basic attention block
 class AttentionIsAllYouNeed(nnx.Module):
     def __init__(self, embed_dim: int, num_heads: int, d_ff: int, rngs: nnx.Rngs, rate: float = 0.1, dtype: jnp.dtype = jnp.bfloat16):
-        self.mha = nnx.MultiHeadAttention(num_heads = num_heads, in_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = dtype)
+        self.param_dtype = jnp.float32
+        self.mha = nnx.MultiHeadAttention(num_heads = num_heads, in_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = self.param_dtype)
         self.dropout1 = nnx.Dropout(rate = rate, rngs = rngs)
-        self.layer_norm1 = nnx.LayerNorm(epsilon = 1e-6, num_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = dtype)
+        self.layer_norm1 = nnx.LayerNorm(epsilon = 1e-6, num_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = self.param_dtype)
         self.mlp = nnx.Sequential(
-            nnx.Linear(in_features = embed_dim, out_features = d_ff, rngs = rngs, dtype = dtype, param_dtype = dtype),
+            nnx.Linear(in_features = embed_dim, out_features = d_ff, rngs = rngs, dtype = dtype, param_dtype = self.param_dtype),
             nnx.relu,
-            nnx.Linear(in_features = d_ff, out_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = dtype),
+            nnx.Linear(in_features = d_ff, out_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = self.param_dtype),
             nnx.Dropout(rate = rate, rngs = rngs))
-        self.layer_norm2 = nnx.LayerNorm(epsilon = 1e-6, num_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = dtype)
+        self.layer_norm2 = nnx.LayerNorm(epsilon = 1e-6, num_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = self.param_dtype)
     
     def __call__(self, inputs):
         causal_mask = nnx.make_causal_mask(inputs[..., 0], dtype=bool)
@@ -30,15 +31,16 @@ class AttentionIsAllYouNeed(nnx.Module):
 
 class PreNormAttentionBlock(nnx.Module):
     def __init__(self, embed_dim: int, num_heads: int, d_ff: int, rngs: nnx.Rngs, rate: float = 0.1, dtype: jnp.dtype = jnp.bfloat16):
-        self.mha = nnx.MultiHeadAttention(num_heads = num_heads, in_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = dtype, attention_fn = cudnn_causal_attention)
+        self.param_dtype = jnp.float32
+        self.mha = nnx.MultiHeadAttention(num_heads = num_heads, in_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = self.param_dtype, attention_fn = cudnn_causal_attention)
         self.dropout1 = nnx.Dropout(rate = rate, rngs = rngs)
-        self.layer_norm1 = nnx.LayerNorm(epsilon = 1e-6, num_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = dtype)
+        self.layer_norm1 = nnx.LayerNorm(epsilon = 1e-6, num_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = self.param_dtype)
         self.mlp = nnx.Sequential(
-            nnx.Linear(in_features = embed_dim, out_features = d_ff, rngs = rngs, dtype = dtype, param_dtype = dtype),
+            nnx.Linear(in_features = embed_dim, out_features = d_ff, rngs = rngs, dtype = dtype, param_dtype = self.param_dtype),
             nnx.relu,
-            nnx.Linear(in_features = d_ff, out_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = dtype),
+            nnx.Linear(in_features = d_ff, out_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = self.param_dtype),
             nnx.Dropout(rate = rate, rngs = rngs))
-        self.layer_norm2 = nnx.LayerNorm(epsilon = 1e-6, num_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = dtype)
+        self.layer_norm2 = nnx.LayerNorm(epsilon = 1e-6, num_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = self.param_dtype)
 
     def __call__(self, inputs):
         # causal_mask = nnx.make_causal_mask(inputs[..., 0], dtype=bool)
