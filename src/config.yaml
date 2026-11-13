@@ -7,8 +7,8 @@ model_training_1:
   maxlen: 1024
   embed_dim: 1024
   d_ff: 3072
-  version: "adv_v2.2_packing"
-  max_steps: 5000
+  version: "adv_v2_4_continued"
+  max_steps: 10000
 
 model_training_2:
   num_heads: 16

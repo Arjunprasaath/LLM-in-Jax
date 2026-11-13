@@ -30,7 +30,7 @@ class AttentionIsAllYouNeed(nnx.Module):
         return self.layer_norm2(normalized + ffn_output)
 
 class PreNormAttentionBlock(nnx.Module):
-    def __init__(self, embed_dim: int, num_heads: int, d_ff: int, rngs: nnx.Rngs, rate: float = 0.1, dtype: jnp.dtype = jnp.bfloat16):
+    def __init__(self, embed_dim: int, num_heads: int, d_ff: int, rngs: nnx.Rngs, rate: float = 0.0, dtype: jnp.dtype = jnp.bfloat16):
         self.param_dtype = jnp.float32
         self.mha = nnx.MultiHeadAttention(num_heads = num_heads, in_features = embed_dim, rngs = rngs, dtype = dtype, param_dtype = self.param_dtype, attention_fn = cudnn_causal_attention)
         self.dropout1 = nnx.Dropout(rate = rate, rngs = rngs)

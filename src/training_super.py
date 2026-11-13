@@ -95,6 +95,8 @@ pad_id = tokenizer.token_to_id("[PAD]")
 
 tokenizer_start_prompt = tokenizer.encode(start_prompt[0])
 start_token, sample_index = jnp.asarray(tokenizer_start_prompt.ids)[None, :], sum(tokenizer_start_prompt.attention_mask)
+padded = jnp.zeros((1, maxlen), dtype = jnp.int32)
+padded = padded.at[:, :start_token.shape[-1]].set(start_token)
 
 # getting the token bytes for Bit-Per-Bytes
 special_ids = {pad_id, tokenizer.token_to_id("<|startoftext|>"), tokenizer.token_to_id("<|endoftext|>")}
@@ -138,18 +140,30 @@ MATH_TRAIN_PATH = ROOT / "data_bin/math_train.bin"
 MATH_TEST_PATH = ROOT / "data_bin/math_test.bin"
 
 
-web_wiki_train = make_data_fun(PackedMemmapDataset(WEB_WIKI_TRAIN_PATH, maxlen = maxlen), seed = 10)
-web_wiki_test = make_data_fun(PackedMemmapDataset(WEB_WIKI_TEST_PATH, maxlen = maxlen), seed = 11)
-math_train = make_data_fun(PackedMemmapDataset(MATH_TRAIN_PATH, maxlen = maxlen), seed = 12)
-math_test = make_data_fun(PackedMemmapDataset(MATH_TEST_PATH, maxlen = maxlen), seed = 13)
+web_wiki_train = make_data_fun(PackedMemmapDataset(WEB_WIKI_TRAIN_PATH, maxlen = maxlen), seed = 120)
+web_wiki_test = make_data_fun(PackedMemmapDataset(WEB_WIKI_TEST_PATH, maxlen = maxlen), seed = 121)
+math_train = make_data_fun(PackedMemmapDataset(MATH_TRAIN_PATH, maxlen = maxlen), seed = 122)
+math_test = make_data_fun(PackedMemmapDataset(MATH_TEST_PATH, maxlen = maxlen), seed = 123)
 
-train_dataset = grain.IterDataset.mix([web_wiki_train, math_train], weights = [1, 0.5])
+train_dataset = grain.IterDataset.mix([web_wiki_train, math_train], weights = [1, 0.8])
 
 train_pipeline = (
     train_dataset
     .batch(batch_size = batch_size, drop_remainder = True)
 )
 train_iterator = iter(train_pipeline)
+
+load_checkpoint_path = ROOT / "src/checkpoint_64_adv_v2.3_weights_scheduler"
+iter_state_path = load_checkpoint_path / "iterator_state.json"
+if iter_state_path.exists():
+    with open(iter_state_path, "r") as f:
+        saved_info = json.load(f)
+    train_iterator.set_state(saved_info["iter_state"])
+    step = saved_info.get("step", 0)
+    print(f"Restored iterator state from step:{step}")
+else:
+    step = 0
+    print(f"Fresh run starting with step: {step}")
 
 test_pipeline_web_wiki = (
     web_wiki_test
@@ -168,25 +182,42 @@ print(nnx.tabulate(model_1, jnp.ones((1, maxlen), dtype = jnp.int32)))
 # print(nnx.tabulate(model_2, jnp.ones((1, maxlen), dtype = jnp.int32)))
 
 # LR scheduler
-scheduler = optax.warmup_cosine_decay_schedule(
+# scheduler = optax.warmup_cosine_decay_schedule(
+#     init_value = 0.0,
+#     peak_value = lr,
+#     warmup_steps = int((max_steps / 4) * 0.15),
+#     decay_steps = int((max_steps / 4)),
+#     end_value = lr / 100,
+# )
+scheduler = optax.warmup_constant_schedule(
     init_value = 0.0,
     peak_value = lr,
-    warmup_steps = max_steps * 0.15,
-    decay_steps = max_steps * 0.65,
-    end_value = lr / 100,
+    warmup_steps = int((max_steps / 4) * 0.15),
+    # decay_steps = int((max_steps / 4)),
+    # end_value = lr / 100,
 )
 
 optimizer_1 = nnx.Optimizer(
     model_1, 
-    optax.chain(
-        optax.clip_by_global_norm(1.0),
-        optax.MultiSteps(
+    optax.MultiSteps(
+        optax.chain(
+            optax.clip_by_global_norm(1.0),
             optax.adamw(scheduler),
-            every_k_schedule = 4
-            ), 
-        ),
+            ),
+        every_k_schedule = 4
+    ),
     wrt = nnx.Param,
 )
+
+checkpointer = orbax.PyTreeCheckpointer()
+abstract_state = nnx.state((model_1, optimizer_1))
+if load_checkpoint_path.exists():
+    restored_state = checkpointer.restore(load_checkpoint_path, args=orbax.args.PyTreeRestore(item=abstract_state))
+    nnx.update((model_1, optimizer_1), restored_state)
+    print(f"Successfully restored model and optimzer from {load_checkpoint_path}")
+else:
+    print(f"Warning: Checkpoint not found at {load_checkpoint_path}, training from scratch")
+
 # optimizer_2 = nnx.Optimizer(model_2, optax.adamw(lr), wrt = nnx.Param)
 
 train_1_metrics = nnx.MultiMetric(loss = nnx.metrics.Average("loss"), perplexity = nnx.metrics.Average("perplexity"))
@@ -225,7 +256,7 @@ lighteval_evaluation_tracker = EvaluationTracker(
 # Configure the pipeline
 lighteval_pipeline_params = PipelineParameters(
     launcher_type=ParallelismManager.CUSTOM,
-    max_samples=128, # TO BE CHANGED
+    max_samples=1000, # TO BE CHANGED
 )
 
 # Create and run the pipeline
@@ -238,7 +269,7 @@ lighteval_pipeline = Pipeline(
 
 # https://docs.jax.dev/en/latest/_autosummary/jax.vmap.html
 prep_target_batch = jax.vmap(
-    lambda token: jnp.concatenate((token[1:], jnp.array([0]))) # we are creating target by shifting one token to the right, adding [0] for shape consistency
+    lambda token: jnp.concatenate((token[1:],jnp.array([pad_id]))) # we are creating target by shifting one token to the right, adding [0] for shape consistency
 ) # and using vmap cause we want to parallelize this lambda function over the batch dimension.
 
 def loss_fun(model, input_batch, target_batch):
@@ -264,12 +295,11 @@ def eval_step(model: GPT_v2_1, metrics: nnx.MultiMetric, input_batch, target_bat
     return loss * mask.sum(), (token_bytes[target_batch] * mask).sum()
 
 # training steps
-step = 0
 total_tokens = 0
 training_interval = 10
-eval_interval = 10
-lighteval_interval = 10
-num_eval_batches = 50
+eval_interval = 500
+lighteval_interval = 1000
+num_eval_batches = 100
 loss_vs_tokens = []
 start_time = time.time()
 eval_dataset = {
@@ -321,7 +351,7 @@ for batch in train_iterator:
             eval_bpb = total_nats / math.log(2) / total_bytes
             computed_eval_1 = eval_1_metrics.compute()
             
-            metric_history.setdefault("eval_1_{name}_bpb", []).append(eval_bpb)
+            metric_history.setdefault(f"eval_1_{name}_bpb", []).append(eval_bpb)
             for metric, value in computed_eval_1.items():
                 metric_history.setdefault(f"eval_1_{name}_{metric}", []).append(float(value))
 
@@ -364,12 +394,17 @@ for batch in train_iterator:
 
         start_time = time.time()
         print("Generated text Model 1:")
-        print(model_1.generate_text(100, start_token, sample_index, tokenizer))
+        print(model_1.generate_text(100, padded, sample_index, tokenizer))
         # print("Generated text Model 2:")
         # print(model_2.generate_text(100, start_token, sample_index, tokenizer))
 
     step += 1
     if step >= max_steps: break
+
+iter_state = train_iterator.get_state()
+checkpoint_path_1.mkdir(parents = True, exist_ok = True)
+with open(checkpoint_path_1 / "iterator_state.json", "w") as f:
+    json.dump({"step": step, "iter_state": iter_state}, f)
 
 train_iterator.close()
 del train_iterator
