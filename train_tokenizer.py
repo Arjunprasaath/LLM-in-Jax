@@ -38,9 +38,21 @@ web_wiki_parquet_files = sorted(glob.glob(WEB_WIKI_PATH + "*.parquet")) # return
 math_parquet_files = sorted(glob.glob(MATH_PATH + "*.parquet"))
 
 tokenizer = Tokenizer(BPE())
-tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space = False)
+tokenizer.pre_tokenizer = pre_tokenizers.Sequence([
+    pre_tokenizers.Digits(individual_digits = True),
+    pre_tokenizers.ByteLevel(add_prefix_space = False)
+    ])
 tokenizer.decoder = decoders.ByteLevel()
-trainer = BpeTrainer(special_tokens=["[PAD]", "<|startoftext|>", "<|endoftext|>"], 
+trainer = BpeTrainer(special_tokens=[
+    "[PAD]",
+    "<|startoftext|>",
+    "<|endoftext|>",
+    "<|im_start|>",
+    "<|im_end|>",
+    "<|system|>",
+    "<|user|>",
+    "<|assistant|>",
+    *[f"<|reserved_{i}|>" for i in range(6)]], 
     vocab_size = VOCAB_SIZE,
     initial_alphabet = pre_tokenizers.ByteLevel.alphabet()
 )

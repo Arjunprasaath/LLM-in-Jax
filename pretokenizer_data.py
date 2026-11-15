@@ -9,7 +9,7 @@ from tqdm import tqdm
 ROOT = Path(__file__).resolve().parent
 print(ROOT)
 # 1. Load tokenizer (disable truncation/padding for raw tokenization)
-tokenizer = Tokenizer.from_file(str(ROOT / "tokenizer_32k/tokenizer.json"))
+tokenizer = Tokenizer.from_file(str(ROOT / "final_tokenizer_32k/tokenizer.json"))
 tokenizer.no_padding()
 tokenizer.no_truncation()
 

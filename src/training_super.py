@@ -1,7 +1,7 @@
 """
 TODO:
     [ x ] Add multi-dataset training and evaluation
-    [   ] Add in-place checkpointing
+    [ x ] Add in-place checkpointing
     [ X ] Add Parallel Model Training
     [ x ] Add live tensorboard support
     [ x ] Bring in the BPB evaluation code here
@@ -49,6 +49,7 @@ from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer
 from datasets import load_dataset
 
+import lighteval
 from lighteval.logging.evaluation_tracker import EvaluationTracker
 from lighteval.models.custom.custom_model import CustomModelConfig
 from lighteval.pipeline import Pipeline, PipelineParameters, ParallelismManager
@@ -56,7 +57,7 @@ from lighteval.pipeline import Pipeline, PipelineParameters, ParallelismManager
 from model.gpt import GPT, GPT_v2_1
 
 ROOT = Path(__file__).resolve().parent.parent   # repo root
-
+LOAD_EXISTING_MODEL = False
 # hyperparemeters
 with open(Path(__file__).resolve().parent / "config.yaml", 'r') as f:
     config = yaml.safe_load(f)
@@ -81,14 +82,14 @@ version_2 = config["model_training_2"]["version"]
 
 shuffle_seed = 40
 rngs_1 = nnx.Rngs(1)
-rngs_2 = nnx.Rngs(2)
+# rngs_2 = nnx.Rngs(2)
 writer = Writer(f"logs/tensorboard_{batch_size}_{version}")
 fig_writer = SummaryWriter(f"logs/tensorboard_{batch_size}_{version}")
 
 # load the tokenizer
 print(f'Loading tokenizer ...')
 start_prompt = ["<|startoftext|> once up on a time"]
-tokenizer = Tokenizer.from_file(str(ROOT / "tokenizer_32k/tokenizer.json"))
+tokenizer = Tokenizer.from_file(str(ROOT / "final_tokenizer_32k/tokenizer.json"))
 pad_id = tokenizer.token_to_id("[PAD]")
 # tokenizer.enable_padding(length=maxlen, pad_id = pad_id, pad_token="[PAD]")
 # tokenizer.enable_truncation(max_length=maxlen)
@@ -153,18 +154,6 @@ train_pipeline = (
 )
 train_iterator = iter(train_pipeline)
 
-load_checkpoint_path = ROOT / "src/checkpoint_64_adv_v2.3_weights_scheduler"
-iter_state_path = load_checkpoint_path / "iterator_state.json"
-if iter_state_path.exists():
-    with open(iter_state_path, "r") as f:
-        saved_info = json.load(f)
-    train_iterator.set_state(saved_info["iter_state"])
-    step = saved_info.get("step", 0)
-    print(f"Restored iterator state from step:{step}")
-else:
-    step = 0
-    print(f"Fresh run starting with step: {step}")
-
 test_pipeline_web_wiki = (
     web_wiki_test
     .batch(batch_size = batch_size, drop_remainder = True)
@@ -177,9 +166,7 @@ test_pipeline_math = (
 # initializing model,  optimizer adn metrics
 print(f'Loading models, optimizer and metrics ...')
 model_1 = GPT_v2_1(vocab_size, maxlen, embed_dim, num_heads, d_ff, num_transformer_blocks, rngs_1)
-# model_2 = GPT(vocab_size, maxlen, embed_dim, num_heads_2, d_ff, num_transformer_blocks_2, rngs_2)
 print(nnx.tabulate(model_1, jnp.ones((1, maxlen), dtype = jnp.int32)))
-# print(nnx.tabulate(model_2, jnp.ones((1, maxlen), dtype = jnp.int32)))
 
 # LR scheduler
 # scheduler = optax.warmup_cosine_decay_schedule(
@@ -209,21 +196,36 @@ optimizer_1 = nnx.Optimizer(
     wrt = nnx.Param,
 )
 
-checkpointer = orbax.PyTreeCheckpointer()
-abstract_state = nnx.state((model_1, optimizer_1))
-if load_checkpoint_path.exists():
-    restored_state = checkpointer.restore(load_checkpoint_path, args=orbax.args.PyTreeRestore(item=abstract_state))
-    nnx.update((model_1, optimizer_1), restored_state)
-    print(f"Successfully restored model and optimzer from {load_checkpoint_path}")
-else:
-    print(f"Warning: Checkpoint not found at {load_checkpoint_path}, training from scratch")
+# Check for existing checkpoint and restore model, optimizer, and iterator state
+step = 0
+if LOAD_EXISTING_MODEL:
+    load_checkpoint_path = ROOT / "src/checkpoint_64_adv_v2.3_weights_scheduler"
+    if load_checkpoint_path.exists():
+        # 1. Restore Model and Optimizer
+        checkpointer = orbax.PyTreeCheckpointer()
+        abstract_state = nnx.state((model_1, optimizer_1))
+        restored_state = checkpointer.restore(load_checkpoint_path, args=orbax.args.PyTreeRestore(item=abstract_state))
+        nnx.update((model_1, optimizer_1), restored_state)
+        print(f"Successfully restored model and optimizer from {load_checkpoint_path}")
 
-# optimizer_2 = nnx.Optimizer(model_2, optax.adamw(lr), wrt = nnx.Param)
+        # 2. Restore Iterator state and global step
+        iter_state_path = load_checkpoint_path / "iterator_state.json"
+        if iter_state_path.exists():
+            with open(iter_state_path, "r") as f:
+                saved_info = json.load(f)
+            train_iterator.set_state(saved_info["iter_state"])
+            step = saved_info.get("step", 0)
+            print(f"Restored iterator state from step: {step}")
+        else:
+            print(f"Warning: No iterator_state.json found in {load_checkpoint_path}, starting data from step 0")
+    else:
+        print(f"Warning: Checkpoint not found at {load_checkpoint_path}, training from scratch with step: {step}")
+else:
+    print(f"Fresh run starting with step: {step}")
+
 
 train_1_metrics = nnx.MultiMetric(loss = nnx.metrics.Average("loss"), perplexity = nnx.metrics.Average("perplexity"))
 eval_1_metrics = nnx.MultiMetric(loss = nnx.metrics.Average("loss"), perplexity = nnx.metrics.Average("perplexity"))
-# train_2_metrics = nnx.MultiMetric(loss = nnx.metrics.Average("loss"), perplexity = nnx.metrics.Average("perplexity"))
-# eval_2_metrics = nnx.MultiMetric(loss = nnx.metrics.Average("loss"), perplexity = nnx.metrics.Average("perplexity"))
 
 checkpoint_path_1 = Path(f"checkpoint_{batch_size}_{version}").resolve()
 # checkpoint_path_2 = Path(f"checkpoint_{batch_size}_{version_2}").resolve()
@@ -256,12 +258,13 @@ lighteval_evaluation_tracker = EvaluationTracker(
 # Configure the pipeline
 lighteval_pipeline_params = PipelineParameters(
     launcher_type=ParallelismManager.CUSTOM,
-    max_samples=1000, # TO BE CHANGED
+    max_samples=500, # TO BE CHANGED
+    custom_tasks_directory = str(ROOT / "src/custom_benchmarks.py"),
 )
 
 # Create and run the pipeline
 lighteval_pipeline = Pipeline(
-    tasks="swag", # TO BE CHANGED
+    tasks=",".join(["hellaswag_cloze", "arc:easy", "piqa_cloze", "sciq", "lambada_openai_acc", "openbookqa_cloze"]), # no spaces: lighteval doesn't strip names
     pipeline_parameters=lighteval_pipeline_params,
     evaluation_tracker=lighteval_evaluation_tracker,
     model=JaxEvalModel(model_1, ROOT / "tokenizer_32k/tokenizer.json", maxlen)
@@ -296,9 +299,9 @@ def eval_step(model: GPT_v2_1, metrics: nnx.MultiMetric, input_batch, target_bat
 
 # training steps
 total_tokens = 0
-training_interval = 10
+training_interval = 50
 eval_interval = 500
-lighteval_interval = 1000
+lighteval_interval = 5000
 num_eval_batches = 100
 loss_vs_tokens = []
 start_time = time.time()
@@ -307,6 +310,8 @@ eval_dataset = {
     "math": list(islice(test_pipeline_math, num_eval_batches)),
 }
 
+inplace_checkpointing = 2000
+
 print("Training starts ...")
 for batch in train_iterator:
     model_1.train()
@@ -314,38 +319,29 @@ for batch in train_iterator:
     target_batch = batch["target_ids"]
 
     loss_1, perplexity_1, num_tokens_1 = train_step(model_1, optimizer_1, train_1_metrics, input_batch, target_batch)
-    # loss_2, perplexity_2 = train_step(model_2, optimizer_2, train_2_metrics, input_batch, target_batch)
     
-    writer.add_scalar("train_1/loss", float(loss_1), step = step)
-    writer.add_scalar("train_1/perplexity", float(perplexity_1), step = step)
     total_tokens += num_tokens_1
-    loss_vs_tokens.append((int(total_tokens), float(loss_1)))
-    # writer.add_scalar("train_2/loss", float(loss_2), step = step)
-    # writer.add_scalar("train_2/perplexity", float(perplexity_2), step = step)
-
     if (step + 1) % training_interval == 0:
+        loss_val = float(loss_1)
+        writer.add_scalar("train_1/loss", loss_val, step = step)
+        writer.add_scalar("train_1/perplexity", float(perplexity_1), step = step)
+        loss_vs_tokens.append((int(total_tokens), loss_val))
+
         for metric, value in train_1_metrics.compute().items():
             metric_history[f"train_1_{metric}"].append(float(value))
         train_1_metrics.reset()
-        # for metric, value in train_2_metrics.compute().items():
-        #     metric_history[f"train_2_{metric}"].append(float(value))
-        # train_2_metrics.reset()
         spent_time = time.time() - start_time
-
         print(f"\n Training Loss 1: {metric_history["train_1_loss"][-1]}, Perplexity 1: {metric_history["train_1_perplexity"][-1]}, Step {step + 1}, Spent Time: {spent_time:.2f} seconds")
-        # print(f"\n Training Loss 2: {metric_history["train_2_loss"][-1]}, Perplexity 2: {metric_history["train_2_perplexity"][-1]}, Step {step + 1}, Spent Time: {spent_time:.2f} seconds")
 
     if (step + 1) % eval_interval == 0:
         model_1.eval()
         for name, batches in eval_dataset.items():
             eval_1_metrics.reset()
-            # eval_2_metrics.reset()
             total_nats = total_bytes = 0.0
             for eval_batch in batches:
                 eval_input = eval_batch["input_ids"]
                 eval_target = prep_target_batch(eval_input)
                 nats, n_bytes = eval_step(model_1, eval_1_metrics, eval_input, eval_target, token_bytes)
-                # eval_step(model_2, eval_2_metrics, eval_input, eval_target)
                 total_nats += float(nats); total_bytes += float(n_bytes)
         
             eval_bpb = total_nats / math.log(2) / total_bytes
@@ -355,18 +351,10 @@ for batch in train_iterator:
             for metric, value in computed_eval_1.items():
                 metric_history.setdefault(f"eval_1_{name}_{metric}", []).append(float(value))
 
-            # computed_eval_2 = eval_2_metrics.compute()
-            # for metric, value in computed_eval_2.items():
-            #     metric_history[f"eval_2_{metric}"].append(float(value))
-
             writer.add_scalar(f"eval_1/{name}_loss", float(computed_eval_1["loss"]), step = step)
             writer.add_scalar(f"eval_1/{name}_perplexity", float(computed_eval_1["perplexity"]), step = step)
             writer.add_scalar(f"eval_1/{name}_bpb", float(eval_bpb), step = step)
-            # writer.add_scalar("eval_2/loss", float(computed_eval_2["loss"]), step = step)
-            # writer.add_scalar("eval_2/perplexity", float(computed_eval_2["perplexity"]), step = step)
-
             print(f"\n Eval {name} Loss: {computed_eval_1["loss"]:.4f}, Perplexity: {computed_eval_1["perplexity"]:.4f}, BPB: {eval_bpb:.4f}, Step {step + 1}")
-            # print(f"\n Eval Loss: {computed_eval_2["loss"]:.4f}, Perplexity: {computed_eval_2["perplexity"]:.4f}, Step {step + 1}")
 
         # Scaling law plot
         if loss_vs_tokens:
@@ -386,48 +374,37 @@ for batch in train_iterator:
 
     if (step + 1) % lighteval_interval == 0:
         model_1.eval()
+        # clearing loggers so eval messuers only the current model performance.
+        lighteval_pipeline.evaluation_tracker.metrics_logger.metrics_values.clear()
+        lighteval_pipeline.evaluation_tracker.metrics_logger.metric_aggregated.clear()
+        if hasattr(lighteval_pipeline.evaluation_tracker, "details_logger"):
+            lighteval_pipeline.evaluation_tracker.details_logger.details.clear()
         lighteval_pipeline.evaluate()
+
         for task, scores in lighteval_pipeline.get_results()["results"].items():
-            if task != "all":
-                writer.add_scalar(f"lighteval/{task}_acc", float(scores["acc"]), step = step)
-                print(f"\n Lighteval {task}: acc {float(scores['acc']):.4f}, Step {step + 1}")
+            if task == "all": continue
+            for metric, value in scores.items():
+                if metric.endswith("_stderr"):continue
+                writer.add_scalar(f"lighteval/{task}/{metric}", float(value), step = step)
+                print(f"\n Lighteval {task}: {metric}: {float(value):.4f}, Step {step + 1}")
 
         start_time = time.time()
         print("Generated text Model 1:")
         print(model_1.generate_text(100, padded, sample_index, tokenizer))
-        # print("Generated text Model 2:")
-        # print(model_2.generate_text(100, start_token, sample_index, tokenizer))
+
+    # checkpoint every inplace_checkpoint epochs or at the end of training
+    if (step + 1) % inplace_checkpointing == 0 or (step + 1) >= max_steps:
+        state = nnx.state((model_1, optimizer_1))
+        checkpointer.save(checkpoint_path_1, args = orbax.args.PyTreeSave(state), force = True)
+
+        with open(checkpoint_path_1 / "iterator_state.json", "w") as f:
+            json.dump({"step": step + 1, "iter_state": train_iterator.get_state()}, f)
 
     step += 1
     if step >= max_steps: break
-
-iter_state = train_iterator.get_state()
-checkpoint_path_1.mkdir(parents = True, exist_ok = True)
-with open(checkpoint_path_1 / "iterator_state.json", "w") as f:
-    json.dump({"step": step, "iter_state": iter_state}, f)
 
 train_iterator.close()
 del train_iterator
 gc.collect()
 writer.close()
 fig_writer.close()
-
-# saving the model, optimizer and train_loss metric
-checkpointer = orbax.PyTreeCheckpointer()
-state = nnx.state((model_1, optimizer_1))
-checkpointer.save(checkpoint_path_1, args = orbax.args.PyTreeSave(state), force=True)
-
-# checkpointer = orbax.PyTreeCheckpointer()
-# state = nnx.state((model_2, optimizer_2))
-# checkpointer.save(checkpoint_path_2, args = orbax.args.PyTreeSave(state), force=True)
-
-
-# with open(history_path, 'w') as f:
-#     json.dump(metric_history, f)
-# print(f"Saved checkpoint and updated metric successfully!\n")
-
-# plt.plot(metric_history['train_loss'])
-# plt.title(f"Training loss checkpoint_{batch_size}_{version}")
-# plt.xlabel("Steps % 100")
-# plt.ylabel("Loss")
-# plt.savefig(f"train_loss_checkpoint_{batch_size}_{version}.png")
