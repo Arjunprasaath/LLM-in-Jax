@@ -55,6 +55,7 @@ from lighteval.models.custom.custom_model import CustomModelConfig
 from lighteval.pipeline import Pipeline, PipelineParameters, ParallelismManager
 
 from model.gpt import GPT, GPT_v2_1
+from utils.scheduler import warmup_stable_decay_scheduler
 
 ROOT = Path(__file__).resolve().parent.parent   # repo root
 LOAD_EXISTING_MODEL = False
@@ -169,19 +170,18 @@ model_1 = GPT_v2_1(vocab_size, maxlen, embed_dim, num_heads, d_ff, num_transform
 print(nnx.tabulate(model_1, jnp.ones((1, maxlen), dtype = jnp.int32)))
 
 # LR scheduler
-# scheduler = optax.warmup_cosine_decay_schedule(
-#     init_value = 0.0,
-#     peak_value = lr,
-#     warmup_steps = int((max_steps / 4) * 0.15),
-#     decay_steps = int((max_steps / 4)),
-#     end_value = lr / 100,
-# )
-scheduler = optax.warmup_constant_schedule(
+warmup_step = int((max_steps / 4) * 0.15)
+stable_step = int((max_steps / 4) * 0.60)
+decay_step = int((max_steps / 4) - (warmup_step + stable_step))
+
+scheduler = warmup_stable_decay_scheduler(
     init_value = 0.0,
     peak_value = lr,
-    warmup_steps = int((max_steps / 4) * 0.15),
-    # decay_steps = int((max_steps / 4)),
-    # end_value = lr / 100,
+    warmup_steps = warmup_step,
+    stable_steps = stable_step,
+    decay_steps = decay_step,
+    end_value = lr / 100,
+    decay_type = "linear",
 )
 
 optimizer_1 = nnx.Optimizer(
