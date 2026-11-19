@@ -1,16 +1,22 @@
 model_training_1:
+  version: "R1a"
+  init_seed: 1
+  data_seed: 120
+  grad_accum: 4
+  warmup_micro_steps: 800
+  stable_micro_steps: 12000
+  decay_micro_steps: 3200
+  max_steps: 16000
+  training_interval: 100
+  checkpoint_interval: 4000
+  eval_interval: 500
+  lighteval_interval: 2000
   lr: 3e-4
   batch_size: 64
   vocab_size: 32000
   num_heads: 8
-  num_transformer_blocks: 24
+  num_transformer_blocks: 16
   maxlen: 1024
-  embed_dim: 1024
-  d_ff: 3072
-  version: "test_run"
-  max_steps: 10000
-
-model_training_2:
-  num_heads: 16
-  num_transformer_blocks: 32
-  version: "adv_v3"
+  embed_dim: 512
+  d_ff: 2048
+  resume: false

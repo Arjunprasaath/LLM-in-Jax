@@ -13,7 +13,7 @@ def warmup_stable_decay_scheduler(
     warmup_sched = optax.linear_schedule(
         init_value = init_value,
         end_value = peak_value,
-        transition_step = warmup_steps,
+        transition_steps = warmup_steps,
     )
     
     # Stable phase
@@ -24,7 +24,7 @@ def warmup_stable_decay_scheduler(
         decay_sched = optax.linear_schedule(
             init_value = peak_value,
             end_value = end_value,
-            transition_step = decay_steps,
+            transition_steps = decay_steps,
         )
     elif decay_type == "cosine":
         decay_sched = optax.cosine_decay_schedule(

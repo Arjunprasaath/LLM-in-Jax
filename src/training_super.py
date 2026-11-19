@@ -12,15 +12,11 @@ TODO:
     [ x ] Use gradient accumulation
     [ x ] Cosine learning rate scheduler with warmup
     [ x ] Introduce packing
-
-
 """
 
 
 # import statements
 import os
-os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = "platform"
-
 import gc
 import math
 import glob
@@ -58,7 +54,6 @@ from model.gpt import GPT, GPT_v2_1
 from utils.scheduler import warmup_stable_decay_scheduler
 
 ROOT = Path(__file__).resolve().parent.parent   # repo root
-LOAD_EXISTING_MODEL = False
 # hyperparemeters
 with open(Path(__file__).resolve().parent / "config.yaml", 'r') as f:
     config = yaml.safe_load(f)
@@ -76,16 +71,22 @@ batch_size = config["model_training_1"]["batch_size"]
 lr = float(config["model_training_1"]["lr"])
 version = config["model_training_1"]["version"]
 
-# model 2 config
-num_heads_2 = config["model_training_2"]["num_heads"]
-num_transformer_blocks_2 = config["model_training_2"]["num_transformer_blocks"]
-version_2 = config["model_training_2"]["version"]
+init_seed = config["model_training_1"]["init_seed"]
+data_seed = config["model_training_1"]["data_seed"]
+grad_accum = config["model_training_1"]["grad_accum"]
+warmup_micro_steps = config["model_training_1"]["warmup_micro_steps"]
+stable_micro_steps = config["model_training_1"]["stable_micro_steps"]
+decay_micro_steps = config["model_training_1"]["decay_micro_steps"]
+checkpoint_interval = config["model_training_1"]["checkpoint_interval"]
+eval_interval = config["model_training_1"]["eval_interval"]
+lighteval_interval = config["model_training_1"]["lighteval_interval"]
+training_interval = config["model_training_1"]["training_interval"]
+resume = config["model_training_1"]["resume"]
 
-shuffle_seed = 40
-rngs_1 = nnx.Rngs(1)
-# rngs_2 = nnx.Rngs(2)
-writer = Writer(f"logs/tensorboard_{batch_size}_{version}")
-fig_writer = SummaryWriter(f"logs/tensorboard_{batch_size}_{version}")
+rngs_1 = nnx.Rngs(init_seed)
+log_dir = f"logs/tensorboard_{batch_size}_{version}{"_resumed" if resume else ""}"
+writer = Writer(log_dir)
+fig_writer = SummaryWriter(log_dir)
 
 # load the tokenizer
 print(f'Loading tokenizer ...')
@@ -106,7 +107,7 @@ token_bytes = np.zeros(vocab_size, np.float32)
 
 for token_str, idx in tokenizer.get_vocab().items():
     if idx not in special_ids:
-        token_bytes[idx] = len(token_str)
+        token_bytes[idx] = len(tokenizer.decode([idx]).encode("utf-8"))
 token_bytes = jnp.asarray(token_bytes)
 
 # load the dataset
@@ -142,9 +143,9 @@ MATH_TRAIN_PATH = ROOT / "data_bin/math_train.bin"
 MATH_TEST_PATH = ROOT / "data_bin/math_test.bin"
 
 
-web_wiki_train = make_data_fun(PackedMemmapDataset(WEB_WIKI_TRAIN_PATH, maxlen = maxlen), seed = 120)
+web_wiki_train = make_data_fun(PackedMemmapDataset(WEB_WIKI_TRAIN_PATH, maxlen = maxlen), seed = data_seed)
 web_wiki_test = make_data_fun(PackedMemmapDataset(WEB_WIKI_TEST_PATH, maxlen = maxlen), seed = 121)
-math_train = make_data_fun(PackedMemmapDataset(MATH_TRAIN_PATH, maxlen = maxlen), seed = 122)
+math_train = make_data_fun(PackedMemmapDataset(MATH_TRAIN_PATH, maxlen = maxlen), seed = data_seed + 2)
 math_test = make_data_fun(PackedMemmapDataset(MATH_TEST_PATH, maxlen = maxlen), seed = 123)
 
 train_dataset = grain.IterDataset.mix([web_wiki_train, math_train], weights = [1, 0.8])
@@ -170,16 +171,12 @@ model_1 = GPT_v2_1(vocab_size, maxlen, embed_dim, num_heads, d_ff, num_transform
 print(nnx.tabulate(model_1, jnp.ones((1, maxlen), dtype = jnp.int32)))
 
 # LR scheduler
-warmup_step = int((max_steps / 4) * 0.15)
-stable_step = int((max_steps / 4) * 0.60)
-decay_step = int((max_steps / 4) - (warmup_step + stable_step))
-
 scheduler = warmup_stable_decay_scheduler(
     init_value = 0.0,
     peak_value = lr,
-    warmup_steps = warmup_step,
-    stable_steps = stable_step,
-    decay_steps = decay_step,
+    warmup_steps = warmup_micro_steps // grad_accum,
+    stable_steps = stable_micro_steps // grad_accum,
+    decay_steps = decay_micro_steps // grad_accum,
     end_value = lr / 100,
     decay_type = "linear",
 )
@@ -191,24 +188,26 @@ optimizer_1 = nnx.Optimizer(
             optax.clip_by_global_norm(1.0),
             optax.adamw(scheduler),
             ),
-        every_k_schedule = 4
+        every_k_schedule = grad_accum
     ),
     wrt = nnx.Param,
 )
 
 # Check for existing checkpoint and restore model, optimizer, and iterator state
 step = 0
-if LOAD_EXISTING_MODEL:
-    load_checkpoint_path = ROOT / "src/checkpoint_64_adv_v2.3_weights_scheduler"
+checkpointer = orbax.PyTreeCheckpointer()
+checkpoint_path_1 = Path(f"checkpoint_{batch_size}_{version}").resolve()
+
+if resume:
+    load_checkpoint_path = checkpoint_path_1
     if load_checkpoint_path.exists():
-        # 1. Restore Model and Optimizer
-        checkpointer = orbax.PyTreeCheckpointer()
+        # Restore Model and Optimizer
         abstract_state = nnx.state((model_1, optimizer_1))
         restored_state = checkpointer.restore(load_checkpoint_path, args=orbax.args.PyTreeRestore(item=abstract_state))
         nnx.update((model_1, optimizer_1), restored_state)
         print(f"Successfully restored model and optimizer from {load_checkpoint_path}")
 
-        # 2. Restore Iterator state and global step
+        # Restore Iterator state and global step
         iter_state_path = load_checkpoint_path / "iterator_state.json"
         if iter_state_path.exists():
             with open(iter_state_path, "r") as f:
@@ -227,12 +226,9 @@ else:
 train_1_metrics = nnx.MultiMetric(loss = nnx.metrics.Average("loss"), perplexity = nnx.metrics.Average("perplexity"))
 eval_1_metrics = nnx.MultiMetric(loss = nnx.metrics.Average("loss"), perplexity = nnx.metrics.Average("perplexity"))
 
-checkpoint_path_1 = Path(f"checkpoint_{batch_size}_{version}").resolve()
-# checkpoint_path_2 = Path(f"checkpoint_{batch_size}_{version_2}").resolve()
-
 history_path = checkpoint_path_1 / "metric_history.json"
 
-if history_path.exists():
+if resume and history_path.exists():
     with open(history_path ,'r') as f:
         metric_history = json.load(f)
     print(f"Loaded existing metric histroy with {len(metric_history['train_1_loss'])} and {len(metric_history['eval_1_loss'])}\n")
@@ -251,7 +247,7 @@ else:
 # Set up Lighteval
 from lightevaluation import JaxEvalModel
 lighteval_evaluation_tracker = EvaluationTracker(
-    output_dir="eval_results",
+    output_dir=f"eval_results/{version}",
     save_details=True
 )
 
@@ -267,7 +263,7 @@ lighteval_pipeline = Pipeline(
     tasks=",".join(["hellaswag_cloze", "arc:easy", "piqa_cloze", "sciq", "lambada_openai_acc", "openbookqa_cloze"]), # no spaces: lighteval doesn't strip names
     pipeline_parameters=lighteval_pipeline_params,
     evaluation_tracker=lighteval_evaluation_tracker,
-    model=JaxEvalModel(model_1, ROOT / "tokenizer_32k/tokenizer.json", maxlen)
+    model=JaxEvalModel(model_1, ROOT / "final_tokenizer_32k/tokenizer.json", maxlen)
 )
 
 # https://docs.jax.dev/en/latest/_autosummary/jax.vmap.html
@@ -298,42 +294,56 @@ def eval_step(model: GPT_v2_1, metrics: nnx.MultiMetric, input_batch, target_bat
     return loss * mask.sum(), (token_bytes[target_batch] * mask).sum()
 
 # training steps
-total_tokens = 0
-training_interval = 50
-eval_interval = 500
-lighteval_interval = 5000
+tokens_per_step = batch_size * maxlen
+total_tokens = step * tokens_per_step
+window_tokens = 0
 num_eval_batches = 100
 loss_vs_tokens = []
-start_time = time.time()
 eval_dataset = {
     "web_wiki": list(islice(test_pipeline_web_wiki, num_eval_batches)),
     "math": list(islice(test_pipeline_math, num_eval_batches)),
 }
 
-inplace_checkpointing = 2000
+window_start = time.perf_counter()
 
 print("Training starts ...")
 for batch in train_iterator:
     model_1.train()
     input_batch = batch["input_ids"]
     target_batch = batch["target_ids"]
+    if step % checkpoint_interval == 0:
+        print(f"\n Data check step {step + 1}: {input_batch[0,:8].tolist()}")
 
     loss_1, perplexity_1, num_tokens_1 = train_step(model_1, optimizer_1, train_1_metrics, input_batch, target_batch)
-    
-    total_tokens += num_tokens_1
+
+    total_tokens += tokens_per_step
+    window_tokens += tokens_per_step
+
     if (step + 1) % training_interval == 0:
         loss_val = float(loss_1)
+        elapsed = time.perf_counter() - window_start
+        tokens_per_sec = window_tokens / elapsed
+        gradient_step = int(optimizer_1.opt_state.gradient_step[...])
+        lr_now = float(scheduler(max(gradient_step - 1, 0)))
+
+        writer.add_scalar("train_1/tokens_per_sec", tokens_per_sec, step = step)
+        writer.add_scalar("train_1/total_tokens", total_tokens, step = step)
         writer.add_scalar("train_1/loss", loss_val, step = step)
         writer.add_scalar("train_1/perplexity", float(perplexity_1), step = step)
+        writer.add_scalar("train_1/gradient_step", gradient_step, step = step) # should always be = (step + 1) // grad_accum
+        writer.add_scalar("train_1/lr", lr_now, step = step)
         loss_vs_tokens.append((int(total_tokens), loss_val))
 
         for metric, value in train_1_metrics.compute().items():
             metric_history[f"train_1_{metric}"].append(float(value))
         train_1_metrics.reset()
-        spent_time = time.time() - start_time
-        print(f"\n Training Loss 1: {metric_history["train_1_loss"][-1]}, Perplexity 1: {metric_history["train_1_perplexity"][-1]}, Step {step + 1}, Spent Time: {spent_time:.2f} seconds")
+        writer.add_scalar("train_1/loss_avg", metric_history["train_1_loss"][-1], step = step)
+        print(f"\n Training Loss 1: {metric_history["train_1_loss"][-1]}, Perplexity 1: {metric_history["train_1_perplexity"][-1]}, Step {step + 1}")
+        window_tokens = 0
+        window_start = time.perf_counter()
 
     if (step + 1) % eval_interval == 0:
+        eval_start = time.perf_counter()
         model_1.eval()
         for name, batches in eval_dataset.items():
             eval_1_metrics.reset()
@@ -370,9 +380,13 @@ for batch in train_iterator:
             fig_writer.add_figure("scaling/loss_vs_tokens", fig, global_step=step)
             plt.close(fig)
         
+        writer.add_scalar("eval_1/eval_seconds", time.perf_counter() - eval_start, step = step)
         writer.flush()
+        window_tokens = 0
+        window_start = time.perf_counter()
 
     if (step + 1) % lighteval_interval == 0:
+        lighteval_start = time.perf_counter()
         model_1.eval()
         # clearing loggers so eval messuers only the current model performance.
         lighteval_pipeline.evaluation_tracker.metrics_logger.metrics_values.clear()
@@ -384,21 +398,28 @@ for batch in train_iterator:
         for task, scores in lighteval_pipeline.get_results()["results"].items():
             if task == "all": continue
             for metric, value in scores.items():
-                if metric.endswith("_stderr"):continue
                 writer.add_scalar(f"lighteval/{task}/{metric}", float(value), step = step)
                 print(f"\n Lighteval {task}: {metric}: {float(value):.4f}, Step {step + 1}")
 
-        start_time = time.time()
+        writer.add_scalar("lighteval/eval_seconds", time.perf_counter() - lighteval_start, step = step)
         print("Generated text Model 1:")
         print(model_1.generate_text(100, padded, sample_index, tokenizer))
+        window_tokens = 0
+        window_start = time.perf_counter()
 
     # checkpoint every inplace_checkpoint epochs or at the end of training
-    if (step + 1) % inplace_checkpointing == 0 or (step + 1) >= max_steps:
+    if (step + 1) % checkpoint_interval == 0 or (step + 1) >= max_steps:
         state = nnx.state((model_1, optimizer_1))
         checkpointer.save(checkpoint_path_1, args = orbax.args.PyTreeSave(state), force = True)
 
         with open(checkpoint_path_1 / "iterator_state.json", "w") as f:
             json.dump({"step": step + 1, "iter_state": train_iterator.get_state()}, f)
+
+        with open (history_path, "w") as f:
+            json.dump(metric_history, f)
+
+        window_tokens = 0
+        window_start = time.perf_counter()
 
     step += 1
     if step >= max_steps: break

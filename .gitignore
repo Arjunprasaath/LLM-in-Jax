@@ -226,6 +226,7 @@ __marimo__/
 
 # logs
 *logs/
+*old_runs/
 
 # Data bins
 *data_bin/
